@@ -1,0 +1,570 @@
+---
+title: "PKD_data_fitting"
+author: "張存誠"
+date: "2024-10-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+```{r}
+source("./var select performance.R")
+```
+```{r message=FALSE, warning=FALSE}
+library(knitr)
+library(parallel)
+library(ggplot2)
+library(coda)
+library(openxlsx)
+library(dplyr)
+```
+```{r}
+PKD_data = read.xlsx("./PKD_data/data PKD.xlsx")
+PKD_data = PKD_data[PKD_data$`原始檔毀損無法分析DaTQUANT=1` == 0, ]
+PKD_data = PKD_data[PKD_data$醫師A1 == PKD_data$醫師A2, ]
+PKD_data = PKD_data[, !names(PKD_data) %in% c("研究編號", "醫師A1", "醫師A2", "醫師B", "醫師C", "二分法結果", "原始檔毀損無法分析DaTQUANT=1")]
+colnames(PKD_data)[colnames(PKD_data) == "性別.(0=女，1=男)"] = "Sex"
+colnames(PKD_data)[colnames(PKD_data) == "年齡"] = "Age"
+X = PKD_data[, !names(PKD_data) %in% c("三分法結果", "判讀結果(四分法)")]
+```
+```{r}
+columns_to_interact_Sex = setdiff(names(X), c("Age", "Sex"))
+columns_to_interact_Age = setdiff(names(X), c("Age", "Sex"))
+
+X_interact = X
+for (col in columns_to_interact_Sex) {
+  X_interact = X_interact %>%
+    mutate(!!paste0("Sex_", col) := Sex * .data[[col]])
+}
+for (col in columns_to_interact_Age) {
+  X_interact = X_interact %>%
+    mutate(!!paste0("Age_", col) := Age * .data[[col]])
+}
+X_col = colnames(X)
+X_interact_col = colnames(X_interact)
+```
+
+### Y: 3 categories, X: Gender_interaction, Age_interaction
+```{r}
+if (file.exists("./PKD_data/data/data_interact_3_categories.rds")){
+  data_interact_3_categories = readRDS("./PKD_data/data/data_interact_3_categories.rds")
+}else{
+  data_interact_3_categories = cbind(X_interact, PKD_data[, "三分法結果"]+1)
+  colnames(data_interact_3_categories)[length(colnames(data_interact_3_categories))] = "Y"
+  saveRDS(data_interact_3_categories, file = "./PKD_data/data/data_interact_3_categories.rds")
+}
+```
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+Count = as.data.frame(table(data_interact_3_categories$Y))
+colnames(Count) = c("categories", "counts")
+kable(Count)
+```
+```{r}
+n = nrow(data_interact_3_categories)
+train_indices = 1:328
+
+train_set_3_interact = data_interact_3_categories[train_indices, ]
+test_set_3_interact = data_interact_3_categories[-train_indices, ]
+
+columns_to_standardize = setdiff(names(train_set_3_interact), c("Sex", "Y"))
+means = sapply(train_set_3_interact[, columns_to_standardize], mean)
+sds = sapply(train_set_3_interact[, columns_to_standardize], sd)
+
+train_set_3_interact_standardized = train_set_3_interact
+train_set_3_interact_standardized[, columns_to_standardize] = scale(
+  train_set_3_interact[, columns_to_standardize], center = means, scale = sds
+)
+
+test_set_3_interact_standardized = test_set_3_interact
+test_set_3_interact_standardized[, columns_to_standardize] = scale(
+  test_set_3_interact[, columns_to_standardize], center = means, scale = sds
+)
+```
+```{r fig.height=8, fig.width=8}
+library(corrplot)
+
+cor_matrix = cor(train_set_3_interact_standardized[3:14], use = "complete.obs")
+
+corrplot(cor_matrix, method = "color", 
+         tl.srt = 0, tl.offset = 1, tl.col = "black")
+
+mtext("Correlation Matrix of 12 Imaging Features", side = 3, line = 2, cex = 1.2, font = 2)
+```
+
+
+```{r}
+library(caret)
+library(foreach)
+library(doParallel)
+
+numCores = 5
+cl = makeCluster(numCores)
+registerDoParallel(cl)
+clusterExport(cl, varlist = c("train_set_3_interact_standardized", "bayes_ordinal_fitting"))
+
+set.seed(1111)
+folds = createFolds(train_set_3_interact_standardized$Y, k = 5)
+b_choice = c(1, 2, 3, 5, 10)
+
+# 平行運行 5-fold 交叉驗證，測試每個參數的準確性
+results = foreach(b = b_choice, .combine = rbind, .packages = c("caret")) %dopar% {
+  
+  fold_acc = rep(0, 5)
+  # 在每個參數值上進行 5-fold 交叉驗證
+  for (i in 1:5){
+    # 分割訓練集和測試集
+    fold_train = train_set_3_interact_standardized[-folds[[i]], ]
+    fold_test = train_set_3_interact_standardized[folds[[i]], ]
+    
+    bayes_model = bayes_ordinal_fitting(fold_train, iter=12000, a=1, b=b, theta=0.5, seed_num=7777, save=paste0("./PKD_data/bayes_fitting/3_interact/a_1/5_folds/b_", b, "_fold_", i, ".rds"))
+    
+    burn_in = 10000
+    
+    p = length(bayes_model$gamma_record[, 1])
+    iter = length(bayes_model$gamma_record[1, ])
+    K = length(bayes_model$tau_record[, 1]) + 1
+    gamma_sum = rep(0, p)
+    beta_sum = rep(0, p)
+    tau_sum = rep(0, (K-1))
+    for (j in (burn_in + 1):iter){
+      gamma_sum = gamma_sum + bayes_model$gamma_record[, j]
+      beta_sum = beta_sum + bayes_model$beta_record[, j]
+      tau_sum = tau_sum + bayes_model$tau_record[, j]
+    }
+    beta_hat = rep(0, p)
+    gamma_hat = rep(0, p)
+    tau_hat = tau_sum / (iter - burn_in)
+    selected = which(gamma_sum >= (iter - burn_in) / 2)
+    beta_hat[selected] = beta_sum[selected]/gamma_sum[selected]
+    gamma_hat[selected] = 1
+    
+    # 在測試集上進行預測並計算準確性
+    n_test = length(fold_test[, 1])
+    Y_star_hat = as.matrix(fold_test[, 1:p], nrow=n_test, byrow=TRUE) %*% beta_hat
+    Y_star_hat = as.vector(Y_star_hat[,1])
+    Y_hat = rep(0, n_test)
+    for (l in 1:n_test){
+      if (Y_star_hat[l] > tau_hat[K-1]){
+        Y_hat[l] = K
+      }
+      else{
+        Y_hat[l] = min(which(Y_star_hat[l] < tau_hat))
+      }
+    }
+    ACC_test = mean(Y_hat == fold_test[, (p+1)])
+    fold_acc[i] = ACC_test
+  }
+  
+  # 計算該參數下的平均準確性
+  mean_acc = mean(fold_acc)
+  
+  # 返回每個參數的準確性
+  data.frame(b = b, mean_ACC = mean_acc)
+}
+
+stopCluster(cl)
+registerDoSEQ()
+
+if (!file.exists("./PKD_data/bayes_fitting/3_interact/a_1/5_folds/folds.rds")){
+  saveRDS(folds, "./PKD_data/bayes_fitting/3_interact/a_1/5_folds/folds.rds")
+}
+if (!file.exists("./PKD_data/bayes_fitting/3_interact/a_1/5_folds/b_5_folds_result.rds")){
+  saveRDS(results, "./PKD_data/bayes_fitting/3_interact/a_1/5_folds/b_5_folds_result.rds")
+}
+```
+```{r}
+results = readRDS("./PKD_data/bayes_fitting/3_interact/a_1/5_folds/b_5_folds_result.rds")
+best_b = results[which.max(results$mean_ACC), "b"]
+best_b
+```
+```{r}
+bayes_3_interact = function(seed_num){
+  bayes_model = bayes_ordinal_fitting(train_set_3_interact_standardized, iter=iter, a=1, b=b, theta=0.5, seed_num=seed_num, save=paste0("./PKD_data/bayes_fitting/3_interact/a_1/b_", b, "/", seed_num, ".rds"))
+  return(bayes_model)
+}
+```
+```{r}
+iter = 33000
+run1 = 1
+run2 = 5
+b = best_b
+
+import_vector_3_interact = c("b", "iter", "train_set_3_interact_standardized", "bayes_ordinal_fitting")
+cl = makeCluster(5)
+clusterExport(cl, varlist = import_vector_3_interact)
+result_3_interact = parLapply(cl, run1:run2, bayes_3_interact) 
+stopCluster(cl)
+```
+
+```{r}
+burn_in_3_interact = bayes_check_convergence(result_3_interact)$burn_in
+burn_in_3_interact
+num_converge_sample = 20000
+last_iter = burn_in_3_interact + num_converge_sample
+```
+```{r}
+train_result_3_interact = function(bayes_model, burn_in_3_interact, train_set_3_interact_standardized, last_iter){
+  p = length(bayes_model$gamma_record[, 1])
+  K = length(bayes_model$tau_record[, 1]) + 1
+  gamma_sum = rep(0, p)
+  beta_sum = rep(0, p)
+  tau_sum = rep(0, (K-1))
+  for (j in (burn_in_3_interact + 1):last_iter){
+    gamma_sum = gamma_sum + bayes_model$gamma_record[, j]
+    beta_sum = beta_sum + bayes_model$beta_record[, j]
+    tau_sum = tau_sum + bayes_model$tau_record[, j]
+  }
+  beta_hat = rep(0, p)
+  gamma_hat = rep(0, p)
+  tau_hat = tau_sum / (last_iter - burn_in_3_interact)
+  selected = which(gamma_sum >= (last_iter - burn_in_3_interact) / 2)
+  beta_hat[selected] = beta_sum[selected]/gamma_sum[selected]
+  gamma_hat[selected] = 1
+  
+  n_train = length(train_set_3_interact_standardized[, 1])
+  Y_star_hat = as.matrix(train_set_3_interact_standardized[, 1:p], nrow=n_train, byrow=TRUE) %*% beta_hat
+  Y_star_hat = as.vector(Y_star_hat[,1])
+  Y_hat = rep(0, n_train)
+  for (l in 1:n_train){
+    if (Y_star_hat[l] > tau_hat[K-1]){
+      Y_hat[l] = K
+    }
+    else{
+      Y_hat[l] = min(which(Y_star_hat[l] < tau_hat))
+    }
+  }
+  ACC_train = mean(Y_hat == train_set_3_interact[, (p+1)])
+  return(list(
+    ACC_train = ACC_train,
+    beta_hat = beta_hat,
+    gamma_hat = gamma_hat,
+    gamma_sum = gamma_sum,
+    tau_hat = tau_hat,
+    Y_hat = Y_hat
+  ))
+}
+```
+```{r}
+num_MCMC = length(result_3_interact)
+ACC_train_vector = rep(0, num_MCMC)
+for (i in 1:num_MCMC){
+  bayes_model = result_3_interact[[i]]
+  temp = train_result_3_interact(bayes_model, burn_in_3_interact, train_set_3_interact_standardized, last_iter)
+  ACC_train_vector[i] = temp$ACC_train
+  print(temp$ACC_train)
+  print(X_interact_col[temp$gamma_hat == 1])
+}
+best_bayes_model = result_3_interact[[which.max(ACC_train_vector)]]
+```
+
+```{r}
+p = length(best_bayes_model$gamma_record[, 1])
+K = length(best_bayes_model$tau_record[, 1]) + 1
+best_train_result = train_result_3_interact(best_bayes_model, burn_in_3_interact, train_set_3_interact_standardized, last_iter)
+Y_hat = best_train_result$Y_hat
+gamma_sum = best_train_result$gamma_sum
+
+print(gamma_sum)
+print(X_interact_col[best_train_result$gamma_hat == 1])
+```
+### Best bayesian fitting in training set with Age, AP-R
+```{r}
+print(table(Actual = train_set_3_interact_standardized[, (p+1)], Predicted = Y_hat))
+print(max(ACC_train_vector))
+```
+
+```{r}
+n_test = length(test_set_3_interact_standardized[, 1])
+Y_star_hat = as.matrix(test_set_3_interact_standardized[, 1:p], nrow=n_test, byrow=TRUE) %*% best_train_result$beta_hat
+Y_star_hat = as.vector(Y_star_hat[,1])
+Y_hat = rep(0, n_test)
+for (l in 1:n_test){
+  if (Y_star_hat[l] > best_train_result$tau_hat[K-1]){
+    Y_hat[l] = K
+  }
+  else{
+    Y_hat[l] = min(which(Y_star_hat[l] < best_train_result$tau_hat))
+  }
+}
+ACC_test = mean(Y_hat == test_set_3_interact_standardized[, (p+1)])
+
+table(Actual = test_set_3_interact_standardized[, (p+1)], Predicted = Y_hat)
+print(ACC_test)
+```
+### Refitting with Age, AP-R by ordinal probit model 
+```{r message=FALSE, warning=FALSE}
+library(ordinal)
+
+selected_train_features = train_set_3_interact_standardized[, best_train_result$gamma_hat == 1]
+train_data = cbind(Y = as.factor(train_set_3_interact_standardized$Y), selected_train_features)
+
+mle_model = clm(Y ~ ., data = train_data, link = "probit")
+
+Y_hat_train = predict(mle_model, newdata = selected_train_features, type = "class")$fit
+selected_test_features = test_set_3_interact_standardized[, best_train_result$gamma_hat == 1]
+Y_hat_test = predict(mle_model, newdata = selected_test_features, type = "class")$fit
+
+ACC_train = mean(Y_hat_train == train_set_3_interact_standardized[, (p+1)])
+ACC_test = mean(Y_hat_test == test_set_3_interact_standardized[, (p+1)])
+
+print(table(Actual = train_set_3_interact_standardized[, (p+1)], Predicted = Y_hat_train))
+print(ACC_train)
+print(table(Actual = test_set_3_interact_standardized[, (p+1)], Predicted = Y_hat_test))
+print(ACC_test)
+```
+### Refitting with Age, AP-R, CA by ordinal probit model
+```{r}
+selected_train_features = train_set_3_interact_standardized[, c("Age", "AP-R", "CA")]
+train_data = cbind(Y = as.factor(train_set_3_interact_standardized$Y), selected_train_features)
+
+mle_model = clm(Y ~ ., data = train_data, link = "probit")
+
+Y_hat_train = predict(mle_model, newdata = selected_train_features, type = "class")$fit
+selected_test_features = test_set_3_interact_standardized[, c("Age", "AP-R", "CA")]
+Y_hat_test = predict(mle_model, newdata = selected_test_features, type = "class")$fit
+
+ACC_train = mean(Y_hat_train == train_set_3_interact_standardized[, (p+1)])
+ACC_test = mean(Y_hat_test == test_set_3_interact_standardized[, (p+1)])
+
+print(table(Actual = train_set_3_interact_standardized[, (p+1)], Predicted = Y_hat_train))
+print(ACC_train)
+print(table(Actual = test_set_3_interact_standardized[, (p+1)], Predicted = Y_hat_test))
+print(ACC_test)
+```
+
+### Refitting with Age, S-R, PP-R, P/C-R by bayesian MNP model
+```{r}
+library(MNP)
+
+set.seed(7777)
+
+selected_train_features = train_set_3_interact_standardized[, c("Age", "S-R", "PP-R", "P/C-R")]
+train_data = cbind(Y = as.factor(train_set_3_interact_standardized$Y), selected_train_features)
+
+# traing set
+train_data = train_data %>%
+  rename(S_R = `S-R`, PP_R = `PP-R`, P_C_R = `P/C-R`)
+
+mnp_model = mnp(Y ~ Age + S_R + PP_R + P_C_R, 
+                 data = train_data, 
+                 base = "1", 
+                 burnin = 2000, 
+                 n.draws = 5000, 
+                 verbose = TRUE)
+
+Y_hat_train = predict(mnp_model, newdata = train_data)
+Y_hat_train = apply(Y_hat_train$p, 1, which.max)
+
+# testing set
+test_data = test_set_3_interact_standardized[, c("Age", "S-R", "PP-R", "P/C-R")]
+test_data = test_data %>%
+  rename(S_R = `S-R`, PP_R = `PP-R`, P_C_R = `P/C-R`) %>%
+  mutate(Y = factor(rep(1, nrow(test_data))))
+
+Y_hat_test = predict(mnp_model, newdata = test_data)
+Y_hat_test = apply(Y_hat_test$p, 1, which.max)
+
+# result
+ACC_train = mean(Y_hat_train == train_set_3_interact_standardized[, (p+1)])
+ACC_test = mean(Y_hat_test == test_set_3_interact_standardized[, (p+1)])
+print(table(Actual = train_set_3_interact_standardized[, (p+1)], Predicted = Y_hat_train))
+print(ACC_train)
+print(table(Actual = test_set_3_interact_standardized[, (p+1)], Predicted = Y_hat_test))
+print(ACC_test)
+```
+### ordinalbayes (ordinal logit model + indicator-based bayesian variable selection)
+```{r}
+library(ordinalbayes)
+
+train_data = train_set_3_interact_standardized
+train_data$Y = factor(train_data$Y, ordered=TRUE)
+p = length(train_data[1,]) - 1
+OB_model=ordinalbayes(Y ~ 1,
+                      data = train_data,
+                      x = train_data[, 1:p],
+                      center = FALSE,
+                      scale = FALSE,
+                      model = "regressvi",
+                      gamma.ind = "fixed",
+                      pi.fixed = 0.5,
+                      seed = 1111,
+                      burnInSteps = 8000,
+                      adaptSteps = 0,
+                      numSavedSteps = 20000
+                      )
+
+coefficients = coef(OB_model)
+beta_hat = rep(0, p)
+beta_hat[coefficients$gamma > 0.5] = coefficients$beta[coefficients$gamma > 0.5]
+tau_hat = coefficients$alpha
+names(coefficients$gamma[coefficients$gamma > 0.5])
+```
+```{r}
+n_train = length(train_set_3_interact_standardized[, 1])
+Y_star_hat = as.matrix(train_set_3_interact_standardized[, 1:p], nrow=n_train, byrow=TRUE) %*% beta_hat
+Y_star_hat = as.vector(Y_star_hat[,1])
+Y_hat = rep(0, n_train)
+for (l in 1:n_train){
+  if (Y_star_hat[l] > tau_hat[K-1]){
+    Y_hat[l] = K
+  }
+  else{
+    Y_hat[l] = min(which(Y_star_hat[l] < tau_hat))
+  }
+}
+ACC_train = mean(Y_hat == train_set_3_interact[, (p+1)])
+
+table(Actual = train_set_3_interact_standardized[, (p+1)], Predicted = Y_hat)
+print(ACC_train)
+```
+```{r}
+n_test = length(test_set_3_interact_standardized[, 1])
+Y_star_hat = as.matrix(test_set_3_interact_standardized[, 1:p], nrow=n_test, byrow=TRUE) %*% beta_hat
+Y_star_hat = as.vector(Y_star_hat[,1])
+Y_hat = rep(0, n_test)
+for (l in 1:n_test){
+  if (Y_star_hat[l] > tau_hat[K-1]){
+    Y_hat[l] = K
+  }
+  else{
+    Y_hat[l] = min(which(Y_star_hat[l] < tau_hat))
+  }
+}
+ACC_test = mean(Y_hat == test_set_3_interact_standardized[, (p+1)])
+
+table(Actual = test_set_3_interact_standardized[, (p+1)], Predicted = Y_hat)
+print(ACC_test)
+```
+
+### grouped bayesian fitting
+```{r}
+# 1. 計算相關係數矩陣
+full_cor_matrix = cor(train_set_3_interact_standardized[, 1:p])
+
+# 2. 初始化變數
+remaining = seq_len(p)  # 未分組的列索引
+group_list = list()  # 保存群組結果
+threshold = 0.93
+
+# 3. 開始分組
+while (length(remaining) > 0) {
+  best_group = NULL
+  best_group_size = 0
+  for (seed in remaining) {
+    # 找出與種子列相關係數 > 0.9 的所有列
+    candidate_group = remaining[full_cor_matrix[seed, remaining] > threshold]
+    
+    # 檢查候選群組是否為完全子圖
+    if (all(full_cor_matrix[candidate_group, candidate_group] > threshold)) {
+      # 優先選擇包含列數最多的群組
+      if (length(candidate_group) > best_group_size) {
+        best_group = candidate_group
+        best_group_size = length(candidate_group)
+      }
+    }
+  }
+  
+  # 如果群組數量大於 1，則加入結果
+  if (best_group_size > 1) {
+    group_list[[length(group_list) + 1]] = best_group
+  }
+  
+  # 從剩餘列中移除已分組的列
+  remaining = setdiff(remaining, best_group)
+}
+```
+```{r}
+bayes_3_interact_grouped = function(seed_num){
+  bayes_model = bayes_ordinal_fitting(train_set_3_interact_standardized, iter=iter, a=1, b=b, theta=0.5, seed_num=seed_num, save=paste0("./PKD_data/bayes_fitting/3_interact/a_1/b_", b, "/grouped_", seed_num, ".rds"), group_list=group_list)
+  return(bayes_model)
+}
+```
+```{r}
+iter = 30000
+run1 = 1
+run2 = 5
+b = best_b
+
+import_vector_3_interact_grouped = c("b", "iter", "train_set_3_interact_standardized", "bayes_ordinal_fitting", "group_list")
+cl = makeCluster(5)
+clusterExport(cl, varlist = import_vector_3_interact_grouped)
+result_3_interact_grouped = parLapply(cl, run1:run2, bayes_3_interact_grouped) 
+stopCluster(cl)
+```
+```{r}
+num_converge_sample = 20000
+last_iter = burn_in_3_interact + num_converge_sample
+```
+
+```{r}
+num_MCMC = length(result_3_interact_grouped)
+ACC_train_vector = rep(0, num_MCMC)
+for (i in 1:num_MCMC){
+  bayes_model_grouped = result_3_interact_grouped[[i]]
+  temp = train_result_3_interact(bayes_model_grouped, burn_in_3_interact, train_set_3_interact_standardized, last_iter)
+  ACC_train_vector[i] = temp$ACC_train
+  print(temp$ACC_train)
+  print(X_interact_col[temp$gamma_hat == 1])
+}
+best_bayes_model_grouped = result_3_interact_grouped[[which.max(ACC_train_vector)]]
+```
+```{r}
+p = length(best_bayes_model_grouped$gamma_record[, 1])
+K = length(best_bayes_model_grouped$tau_record[, 1]) + 1
+best_train_result_grouped = train_result_3_interact(best_bayes_model_grouped, burn_in_3_interact, train_set_3_interact_standardized, last_iter)
+Y_hat = best_train_result_grouped$Y_hat
+gamma_sum = best_train_result_grouped$gamma_sum
+
+print(gamma_sum)
+print(X_interact_col[best_train_result_grouped$gamma_hat == 1])
+```
+```{r}
+print(table(Actual = train_set_3_interact_standardized[, (p+1)], Predicted = Y_hat))
+print(max(ACC_train_vector))
+```
+```{r}
+n_test = length(test_set_3_interact_standardized[, 1])
+Y_star_hat = as.matrix(test_set_3_interact_standardized[, 1:p], nrow=n_test, byrow=TRUE) %*% best_train_result_grouped$beta_hat
+Y_star_hat = as.vector(Y_star_hat[,1])
+Y_hat = rep(0, n_test)
+for (l in 1:n_test){
+  if (Y_star_hat[l] > best_train_result_grouped$tau_hat[K-1]){
+    Y_hat[l] = K
+  }
+  else{
+    Y_hat[l] = min(which(Y_star_hat[l] < best_train_result_grouped$tau_hat))
+  }
+}
+ACC_test = mean(Y_hat == test_set_3_interact_standardized[, (p+1)])
+
+table(Actual = test_set_3_interact_standardized[, (p+1)], Predicted = Y_hat)
+print(ACC_test)
+```
+### Refitting with Age, S-R, S-L, AP-R, AP-L by ordinal probit model
+```{r}
+selected_train_features = train_set_3_interact_standardized[, best_train_result_grouped$gamma_hat == 1]
+train_data = cbind(Y = as.factor(train_set_3_interact_standardized$Y), selected_train_features)
+
+mle_model = clm(Y ~ ., data = train_data, link = "probit")
+
+Y_hat_train = predict(mle_model, newdata = selected_train_features, type = "class")$fit
+selected_test_features = test_set_3_interact_standardized[, best_train_result_grouped$gamma_hat == 1]
+Y_hat_test = predict(mle_model, newdata = selected_test_features, type = "class")$fit
+
+ACC_train = mean(Y_hat_train == train_set_3_interact_standardized[, (p+1)])
+ACC_test = mean(Y_hat_test == test_set_3_interact_standardized[, (p+1)])
+
+print(table(Actual = train_set_3_interact_standardized[, (p+1)], Predicted = Y_hat_train))
+print(ACC_train)
+print(table(Actual = test_set_3_interact_standardized[, (p+1)], Predicted = Y_hat_test))
+print(ACC_test)
+```
+
+
+
