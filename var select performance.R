@@ -116,6 +116,146 @@ BIC_method = function(seed_num_data){
   ))
 }
 
+ordinalbayes_simulation_import = c("thresholds", "simulation_data_folder", "OB_model_folder", "n", "beta", "cor_X", "burn_in", "active_p")
+ordinalbayes_simulation = function(seed_num){
+  library(ordinalbayes)
+  
+  seed_num_data = seed_num
+  seed_num_fit = seed_num
+  K = length(thresholds) + 1
+  if (!file.exists(simulation_data_folder)) {
+    dir.create(simulation_data_folder, recursive = TRUE)
+  }
+  if (!file.exists(OB_model_folder)) {
+    dir.create(OB_model_folder, recursive = TRUE)
+  }
+  if (file.exists(paste0(simulation_data_folder, seed_num_data, ".rds"))){
+    simulation_data = readRDS(paste0(simulation_data_folder, seed_num_data, ".rds"))
+  }
+  else{
+    simulation_data = ordinal_data(n, beta, thresholds, cor_X, seed_num=seed_num_data)
+    saveRDS(simulation_data, file = paste0(simulation_data_folder, seed_num_data, ".rds"))
+  }
+  train_data = subset(simulation_data, select = -Y_star)
+  train_data$Y = factor(train_data$Y, ordered=TRUE)
+  p = length(train_data[1,]) - 1
+  K = length(thresholds) + 1
+  if (file.exists(paste0(OB_model_folder, seed_num_data, "_", seed_num_fit, ".rds"))){
+    OB_model = readRDS(paste0(OB_model_folder, seed_num_data, "_", seed_num_fit, ".rds"))
+  }
+  else{
+    OB_model=ordinalbayes(Y ~ 1,
+                          data = train_data,
+                          x = train_data[, 1:p],
+                          center = FALSE,
+                          scale = FALSE,
+                          model = "regressvi",
+                          gamma.ind = "fixed",
+                          pi.fixed = 0.5,
+                          seed = seed_num_fit,
+                          burnInSteps = burn_in,
+                          nChains = 1,
+                          adaptSteps = 0,
+                          numSavedSteps = 2000
+    )
+    saveRDS(OB_model, file = paste0(OB_model_folder, seed_num_data, "_", seed_num_fit, ".rds"))
+  }
+  
+  coefficients = coef(OB_model)
+  selected = which(coefficients$gamma > 0.5)
+  selected_bayes = paste0("X", selected)
+  beta_hat = rep(0, p)
+  beta_hat[selected] = coefficients$beta[selected]
+  gamma_hat = rep(0, p)
+  gamma_hat[selected] = 1
+  tau_hat = coefficients$alpha
+  result_bayes = rep(0, 5)
+  if (identical(selected_bayes, paste0("X", active_p))){
+    result_bayes[1] = 1
+  }
+  result_bayes[2] = sum(selected_bayes %in% paste0("X", active_p))
+  result_bayes[3] = (length(selected_bayes) - sum(selected_bayes %in% paste0("X", active_p)))
+  if (all(paste0("X", active_p) %in% selected_bayes)){
+    result_bayes[4] = 1
+  }
+  
+  n_train = length(train_data[, 1])
+  Y_star_hat = as.matrix(train_data[, 1:p], nrow=n_train, byrow=TRUE) %*% beta_hat
+  Y_star_hat = as.vector(Y_star_hat[,1])
+  Y_hat = rep(0, n_train)
+  for (l in 1:n_train){
+    if (Y_star_hat[l] > tau_hat[K-1]){
+      Y_hat[l] = K
+    }
+    else{
+      Y_hat[l] = min(which(Y_star_hat[l] < tau_hat))
+    }
+  }
+  ACC_train = mean(Y_hat == train_data[, (p+1)])
+  result_bayes[5] = ACC_train
+  
+  return(list(
+    result_stat = result_bayes,
+    gamma_hat = gamma_hat,
+    beta_hat = beta_hat,
+    tau_hat = tau_hat
+  ))
+}
+
+ordinalbayes_test_import = c("seed_num_data", "seed_num_test_data", "n", "beta", "thresholds", "cor_X", "testing_data_folder", "OB_model_folder", "ordinal_data")
+ordinalbayes_testing = function(seed_num){
+  library(ordinalbayes)
+  
+  seed_num_data = seed_num
+  seed_num_fit = seed_num
+  K = length(thresholds) + 1
+  if (!file.exists(testing_data_folder)) {
+    dir.create(testing_data_folder, recursive = TRUE)
+  }
+  if (!file.exists(OB_model_folder)) {
+    stop('OB_model_folder does not exist.')
+  }
+  if (file.exists(paste0(testing_data_folder, seed_num_test_data, ".rds"))){
+    testing_data = readRDS(paste0(testing_data_folder, seed_num_test_data, ".rds"))
+  }
+  else{
+    testing_data = ordinal_data(n, beta, thresholds, cor_X, seed_num=seed_num_test_data)
+    saveRDS(testing_data, file = paste0(testing_data_folder, seed_num_test_data, ".rds"))
+  }
+  if (file.exists(paste0(OB_model_folder, seed_num_data, "_", seed_num_fit, ".rds"))){
+    OB_model = readRDS(paste0(OB_model_folder, seed_num_data, "_", seed_num_fit, ".rds"))
+  }
+  else{
+    stop('OB_model does not exist.')
+  }
+  coefficients = coef(OB_model)
+  p = length(coefficients$gamma)
+  selected = which(coefficients$gamma > 0.5)
+  selected_bayes = paste0("X", selected)
+  beta_hat = rep(0, p)
+  beta_hat[selected] = coefficients$beta[selected]
+  gamma_hat = rep(0, p)
+  gamma_hat[selected] = 1
+  tau_hat = coefficients$alpha
+  testing_data = subset(testing_data, select = -Y_star)
+  Y_star_pre = as.matrix(testing_data[,1:p], nrow=n, byrow=TRUE) %*% beta_hat
+  Y_star_pre = as.vector(Y_star_pre[,1])
+  Y_hat = rep(0, n)
+  for (l in 1:n){
+    if (Y_star_pre[l] > tau_hat[K-1]){
+      Y_hat[l] = K
+    }
+    else{
+      Y_hat[l] = min(which(Y_star_pre[l] < tau_hat))
+    }
+  }
+  ACC_test = mean(Y_hat == testing_data[, (p+1)])
+  return(list(
+    classification_table = table(testing_data[, (p+1)], Y_hat),
+    ACC_test = ACC_test
+  ))
+}
+
 bayes_import = c("n", "beta", "thresholds", "cor_X", "active_p", "a", "b", "burn_in", 
                  "simulation_data_folder", "bayes_model_folder", "ordinal_data", "bayes_ordinal_fitting")
 bayes_method = function(seed_num){
@@ -279,14 +419,13 @@ bayes_check_convergence = function(bayes_result, tau_threshold=1.1, gamma_thresh
   }
   mc = mcmc.list(mcmc_tau)
   
-  GRD = rep(2, num_check)
+  GRD = rep(0, num_check)
   for (j in 1:num_check){
-    if (interval*j > 2000){
-      subset_mcmc_list = lapply(mc, function(chain){mcmc(chain[1:(interval*j), ])})
-      GRD[j] = gelman.diag(subset_mcmc_list)$mpsrf
-    }
+    subset_mcmc_list = lapply(mc, function(chain){mcmc(chain[1:(interval*j), ])})
+    GRD[j] = gelman.diag(subset_mcmc_list)$mpsrf
   }
   check_GRD = which(GRD < tau_threshold)
+  check_GRD = check_GRD[check_GRD > 2]
   if (length(check_GRD) == 0){
     converge_tau = "tau does not converge!"
   }else{

@@ -379,7 +379,7 @@ print(table(Actual = test_set_3_interact_standardized[, (p+1)], Predicted = Y_ha
 print(ACC_test)
 ```
 ### ordinalbayes (ordinal logit model + indicator-based bayesian variable selection)
-```{r}
+```{r eval=FALSE, include=FALSE}
 library(ordinalbayes)
 
 train_data = train_set_3_interact_standardized
@@ -396,7 +396,7 @@ OB_model=ordinalbayes(Y ~ 1,
                       seed = 1111,
                       burnInSteps = 8000,
                       adaptSteps = 0,
-                      numSavedSteps = 20000
+                      numSavedSteps = 9000
                       )
 
 coefficients = coef(OB_model)
@@ -405,7 +405,7 @@ beta_hat[coefficients$gamma > 0.5] = coefficients$beta[coefficients$gamma > 0.5]
 tau_hat = coefficients$alpha
 names(coefficients$gamma[coefficients$gamma > 0.5])
 ```
-```{r}
+```{r eval=FALSE, include=FALSE}
 n_train = length(train_set_3_interact_standardized[, 1])
 Y_star_hat = as.matrix(train_set_3_interact_standardized[, 1:p], nrow=n_train, byrow=TRUE) %*% beta_hat
 Y_star_hat = as.vector(Y_star_hat[,1])
@@ -423,7 +423,7 @@ ACC_train = mean(Y_hat == train_set_3_interact[, (p+1)])
 table(Actual = train_set_3_interact_standardized[, (p+1)], Predicted = Y_hat)
 print(ACC_train)
 ```
-```{r}
+```{r eval=FALSE, include=FALSE}
 n_test = length(test_set_3_interact_standardized[, 1])
 Y_star_hat = as.matrix(test_set_3_interact_standardized[, 1:p], nrow=n_test, byrow=TRUE) %*% beta_hat
 Y_star_hat = as.vector(Y_star_hat[,1])
@@ -444,24 +444,25 @@ print(ACC_test)
 
 ### grouped bayesian fitting
 ```{r}
-# 1. 計算相關係數矩陣
-full_cor_matrix = cor(train_set_3_interact_standardized[, 1:p])
+# 1. 計算主要變數的相關係數矩陣
+main_vars = train_set_3_interact_standardized[, 3:14]  # 提取12個主要變數
+main_cor_matrix = cor(main_vars)
 
 # 2. 初始化變數
-remaining = seq_len(p)  # 未分組的列索引
-group_list = list()  # 保存群組結果
+remaining = seq_len(ncol(main_vars))  # 未分組的主要變數索引
+group_list = list()  # 保存主要變數的分組結果
 threshold = 0.93
 
-# 3. 開始分組
+# 3. 開始分組主要變數
 while (length(remaining) > 0) {
   best_group = NULL
   best_group_size = 0
   for (seed in remaining) {
-    # 找出與種子列相關係數 > 0.9 的所有列
-    candidate_group = remaining[full_cor_matrix[seed, remaining] > threshold]
+    # 找出與種子列相關係數 > threshold 的所有列
+    candidate_group = remaining[main_cor_matrix[seed, remaining] > threshold]
     
     # 檢查候選群組是否為完全子圖
-    if (all(full_cor_matrix[candidate_group, candidate_group] > threshold)) {
+    if (all(main_cor_matrix[candidate_group, candidate_group] > threshold)) {
       # 優先選擇包含列數最多的群組
       if (length(candidate_group) > best_group_size) {
         best_group = candidate_group
@@ -472,16 +473,33 @@ while (length(remaining) > 0) {
   
   # 如果群組數量大於 1，則加入結果
   if (best_group_size > 1) {
-    group_list[[length(group_list) + 1]] = best_group
+    group_list[[length(group_list) + 1]] = best_group + 2
   }
   
   # 從剩餘列中移除已分組的列
   remaining = setdiff(remaining, best_group)
 }
+
+# 4. 對交互作用變數進行分組
+interaction_groups = list()
+for (i in seq_along(group_list)) {
+  main_group = group_list[[i]]
+  sex_interactions = main_group + 12  # `Sex_*` 的索引偏移量
+  age_interactions = main_group + 24  # `Age_*` 的索引偏移量
+  
+  # 將交互作用變數分組
+  interaction_groups[[length(interaction_groups) + 1]] = sex_interactions
+  interaction_groups[[length(interaction_groups) + 1]] = age_interactions
+}
+
+# 5. 整合所有群組
+final_groups = c(group_list, interaction_groups)
+names(final_groups) = NULL  # 如果不需要名稱
+final_groups
 ```
 ```{r}
 bayes_3_interact_grouped = function(seed_num){
-  bayes_model = bayes_ordinal_fitting(train_set_3_interact_standardized, iter=iter, a=1, b=b, theta=0.5, seed_num=seed_num, save=paste0("./PKD_data/bayes_fitting/3_interact/a_1/b_", b, "/grouped_", seed_num, ".rds"), group_list=group_list)
+  bayes_model = bayes_ordinal_fitting(train_set_3_interact_standardized, iter=iter, a=1, b=b, theta=0.5, seed_num=seed_num, save=paste0("./PKD_data/bayes_fitting/3_interact/a_1/b_", b, "/grouped_", seed_num, ".rds"), group_list=final_groups)
   return(bayes_model)
 }
 ```
@@ -491,14 +509,14 @@ run1 = 1
 run2 = 5
 b = best_b
 
-import_vector_3_interact_grouped = c("b", "iter", "train_set_3_interact_standardized", "bayes_ordinal_fitting", "group_list")
+import_vector_3_interact_grouped = c("b", "iter", "train_set_3_interact_standardized", "bayes_ordinal_fitting", "final_groups")
 cl = makeCluster(5)
 clusterExport(cl, varlist = import_vector_3_interact_grouped)
 result_3_interact_grouped = parLapply(cl, run1:run2, bayes_3_interact_grouped) 
 stopCluster(cl)
 ```
 ```{r}
-num_converge_sample = 20000
+num_converge_sample = 9000
 last_iter = burn_in_3_interact + num_converge_sample
 ```
 
@@ -523,6 +541,8 @@ gamma_sum = best_train_result_grouped$gamma_sum
 
 print(gamma_sum)
 print(X_interact_col[best_train_result_grouped$gamma_hat == 1])
+print(best_train_result_grouped$beta_hat[best_train_result_grouped$gamma_hat == 1])
+print(best_train_result_grouped$tau_hat)
 ```
 ```{r}
 print(table(Actual = train_set_3_interact_standardized[, (p+1)], Predicted = Y_hat))
@@ -546,7 +566,7 @@ ACC_test = mean(Y_hat == test_set_3_interact_standardized[, (p+1)])
 table(Actual = test_set_3_interact_standardized[, (p+1)], Predicted = Y_hat)
 print(ACC_test)
 ```
-### Refitting with Age, S-R, S-L, AP-R, AP-L by ordinal probit model
+### Refitting with Age, S-R, S-L, AP-R, AP-L, CA by ordinal probit model
 ```{r}
 selected_train_features = train_set_3_interact_standardized[, best_train_result_grouped$gamma_hat == 1]
 train_data = cbind(Y = as.factor(train_set_3_interact_standardized$Y), selected_train_features)
@@ -565,6 +585,10 @@ print(ACC_train)
 print(table(Actual = test_set_3_interact_standardized[, (p+1)], Predicted = Y_hat_test))
 print(ACC_test)
 ```
+```{r}
+summary(mle_model)
+```
+
 
 
 

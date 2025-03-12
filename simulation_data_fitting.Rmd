@@ -17,6 +17,182 @@ library(parallel)
 library(ggplot2)
 library(coda)
 ```
+
+### 觀察 a 的影響
+```{r eval=FALSE}
+# bayes_import
+n = 300
+p = 100
+
+active_p = c(1, 3, 7, 10, 20)
+true_p = length(active_p)
+
+beta = rep(0, p)
+beta_type = 2
+if (beta_type == 1){
+  beta[active_p] = c(11, -4, 8, -2, -13)
+  thresholds = c(-6, 6)
+}
+if (beta_type == 2){
+  beta[active_p] = c(11, -4, 8, -2, -13) / 3
+  thresholds = c(-6, 6) / 3
+}
+# cor_X = 0.5
+cor_X = 0.8
+b = 10
+iter = 15000
+iter = min(iter, 30000)
+
+if (beta_type == 1){
+  simulation_data_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13/cut_-6_6/cor_", cor_X, "/data/")
+}
+if (beta_type == 2){
+  simulation_data_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13_divide_3/cut_-6_6_divide_3/cor_", cor_X, "/data/")
+}
+```
+```{r eval=FALSE}
+a_choices = c(0.1, 0.2, 0.5, 1, 2)
+
+for (i in 1:length(a_choices)){
+  seed_num_data = 7777
+  # 確認不同 a 的收斂時機
+  a = a_choices[i]
+  cat("a =", a, "\n")
+  if (beta_type == 1){
+    bayes_model_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13/cut_-6_6/cor_", cor_X, "/bayes_fitting/a_", a, "/b_", b, "/")
+  }
+  if (beta_type == 2){
+    bayes_model_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13_divide_3/cut_-6_6_divide_3/cor_", cor_X, "/bayes_fitting/a_", a, "/b_", b, "/")
+  }
+  bayes_simulation_converge = function(seed_num){
+    bayes_model = bayes_ordinal_fitting(fitting_data, iter=iter, a=a, b=b, theta=0.5, seed_num=seed_num, save=paste0(bayes_model_folder, seed_num_data, "_", seed_num, ".rds"))
+    return(bayes_model)
+  }
+  run1 = 1
+  run2 = 5
+  simulation_data = ordinal_data(n, beta, thresholds, cor_X, seed_num=seed_num_data)
+  fitting_data = subset(simulation_data, select = -Y_star)
+  
+  import_simulation_converge = c("a", "b", "iter", "fitting_data", "bayes_ordinal_fitting", "bayes_model_folder", "seed_num_data")
+  cl = makeCluster(5)
+  clusterExport(cl, varlist = import_simulation_converge)
+  result = parLapply(cl, run1:run2, bayes_simulation_converge) 
+  stopCluster(cl)
+  
+  check_convergence = bayes_check_convergence(result, tau_threshold=1.1)
+  burn_in = check_convergence$burn_in
+  cat("burn in =", burn_in, "\n")
+  
+  # 計算不同 a 的表現
+  run1 = 1
+  run2 = 5
+  result = var_select_performance(p, true_p, run1, run2, bayes_import, bayes_method)
+  cat("AEIR =", result$AEIR, "\n")
+  cat("IEIR =", result$IEIR, "\n")
+  cat("ACC train =", mean(result$ACC_train_collect), "\n")
+  
+  testing_data_folder = simulation_data_folder
+  ACC_test = rep(0, run2-run1+1)
+  for (i in run1:run2){
+    seed_num_data = i
+    seed_num_test_data = 1000 + i
+    result = bayes_testing(i)
+    # print(i)
+    # print(result$classification_table)
+    ACC_test[i-run1+1] = result$ACC_test
+  }
+  cat("ACC test =", mean(ACC_test), "\n")
+}
+```
+
+### 觀察 b 的影響
+```{r eval=FALSE}
+# bayes_import
+n = 300
+p = 100
+
+active_p = c(1, 3, 7, 10, 20)
+true_p = length(active_p)
+
+beta = rep(0, p)
+beta_type = 1
+if (beta_type == 1){
+  beta[active_p] = c(11, -4, 8, -2, -13)
+  thresholds = c(-6, 6)
+}
+if (beta_type == 2){
+  beta[active_p] = c(11, -4, 8, -2, -13) / 3
+  thresholds = c(-6, 6) / 3
+}
+cor_X = 0.5
+# cor_X = 0.8
+a = 1
+iter = 15000
+iter = min(iter, 30000)
+
+if (beta_type == 1){
+  simulation_data_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13/cut_-6_6/cor_", cor_X, "/data/")
+}
+if (beta_type == 2){
+  simulation_data_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13_divide_3/cut_-6_6_divide_3/cor_", cor_X, "/data/")
+}
+```
+```{r eval=FALSE}
+b_choices = c(1, 2, 3, 5, 10, 20, 50)
+
+for (i in 1:length(b_choices)){
+  seed_num_data = 7777
+  # 確認不同 b 的收斂時機
+  b = b_choices[i]
+  cat("b =", b, "\n")
+  if (beta_type == 1){
+    bayes_model_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13/cut_-6_6/cor_", cor_X, "/bayes_fitting/a_", a, "/b_", b, "/")
+  }
+  if (beta_type == 2){
+    bayes_model_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13_divide_3/cut_-6_6_divide_3/cor_", cor_X, "/bayes_fitting/a_", a, "/b_", b, "/")
+  }
+  bayes_simulation_converge = function(seed_num){
+    bayes_model = bayes_ordinal_fitting(fitting_data, iter=iter, a=a, b=b, theta=0.5, seed_num=seed_num, save=paste0(bayes_model_folder, seed_num_data, "_", seed_num, ".rds"))
+    return(bayes_model)
+  }
+  run1 = 1
+  run2 = 5
+  simulation_data = ordinal_data(n, beta, thresholds, cor_X, seed_num=seed_num_data)
+  fitting_data = subset(simulation_data, select = -Y_star)
+  
+  import_simulation_converge = c("a", "b", "iter", "fitting_data", "bayes_ordinal_fitting", "bayes_model_folder", "seed_num_data")
+  cl = makeCluster(5)
+  clusterExport(cl, varlist = import_simulation_converge)
+  result = parLapply(cl, run1:run2, bayes_simulation_converge) 
+  stopCluster(cl)
+  
+  check_convergence = bayes_check_convergence(result, tau_threshold=1.1)
+  burn_in = check_convergence$burn_in
+  cat("burn in =", burn_in, "\n")
+  
+  # 計算不同 b 的表現
+  run1 = 1
+  run2 = 5
+  result = var_select_performance(p, true_p, run1, run2, bayes_import, bayes_method)
+  cat("AEIR =", result$AEIR, "\n")
+  cat("IEIR =", result$IEIR, "\n")
+  cat("ACC train =", mean(result$ACC_train_collect), "\n")
+  
+  testing_data_folder = simulation_data_folder
+  ACC_test = rep(0, run2-run1+1)
+  for (i in run1:run2){
+    seed_num_data = i
+    seed_num_test_data = 1000 + i
+    result = bayes_testing(i)
+    # print(i)
+    # print(result$classification_table)
+    ACC_test[i-run1+1] = result$ACC_test
+  }
+  cat("ACC test =", mean(ACC_test), "\n")
+}
+```
+
+### 固定 b = 10 的模擬
 ```{r}
 # bayes_import
 seed_num_data = 7777
@@ -27,21 +203,29 @@ active_p = c(1, 3, 7, 10, 20)
 true_p = length(active_p)
 
 beta = rep(0, p)
-# beta[active_p] = c(11, -4, 8, -2, -13)
-# thresholds = c(-6, 6)
-beta[active_p] = c(11, -4, 8, -2, -13) / 3
-thresholds = c(-6, 6) / 3
-cor_X = 0
+beta_type = 1
+if (beta_type == 1){
+  beta[active_p] = c(11, -4, 8, -2, -13)
+  thresholds = c(-6, 6)
+}
+if (beta_type == 2){
+  beta[active_p] = c(11, -4, 8, -2, -13) / 3
+  thresholds = c(-6, 6) / 3
+}
+cor_X = 0.8
 a = 1
 b = 10
 iter = 15000
 iter = min(iter, 30000)
 
-# 記得改
-# simulation_data_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13/cut_-6_6/cor_", cor_X, "/data/")
-# bayes_model_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13/cut_-6_6/cor_", cor_X, "/bayes_fitting/a_", a, "/b_", b, "/")
-simulation_data_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13_divide_3/cut_-6_6_divide_3/cor_", cor_X, "/data/")
-bayes_model_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13_divide_3/cut_-6_6_divide_3/cor_", cor_X, "/bayes_fitting/a_", a, "/b_", b, "/")
+if (beta_type == 1){
+  simulation_data_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13/cut_-6_6/cor_", cor_X, "/data/")
+  bayes_model_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13/cut_-6_6/cor_", cor_X, "/bayes_fitting/a_", a, "/b_", b, "/")
+}
+if (beta_type == 2){
+  simulation_data_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13_divide_3/cut_-6_6_divide_3/cor_", cor_X, "/data/")
+  bayes_model_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13_divide_3/cut_-6_6_divide_3/cor_", cor_X, "/bayes_fitting/a_", a, "/b_", b, "/")
+}
 ```
 
 ```{r}
@@ -60,10 +244,10 @@ clusterExport(cl, varlist = import_simulation_converge)
 result = parLapply(cl, run1:run2, bayes_simulation_converge) 
 stopCluster(cl)
 
-check_convergence = bayes_check_convergence(result)
+check_convergence = bayes_check_convergence(result, tau_threshold=1.1)
 burn_in = check_convergence$burn_in
 burn_in
-# check_convergence$tau_GRD
+check_convergence$tau_GRD
 ```
 
 ```{r}
@@ -104,4 +288,34 @@ for (i in run1:run2){
 }
 mean(ACC_test)
 ```
+
+### ordinalbayes (ordinal logit model + indicator-based bayesian variable selection)
+```{r message=FALSE, warning=FALSE}
+if (beta_type == 1){
+  OB_model_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13/cut_-6_6/cor_", cor_X, "/OB_model/")
+}
+if (beta_type == 2){
+  OB_model_folder = paste0("./simulation_data/p_", p, "/beta_11_-4_8_-2_-13_divide_3/cut_-6_6_divide_3/cor_", cor_X, "/OB_model/")
+}
+run1 = 1
+run2 = 5
+result = var_select_performance(p, true_p, run1, run2, ordinalbayes_simulation_import, ordinalbayes_simulation)
+result$AEIR
+result$IEIR
+mean(result$ACC_train_collect)
+```
+```{r message=FALSE, warning=FALSE}
+testing_data_folder = simulation_data_folder
+ACC_test = rep(0, run2-run1+1)
+for (i in run1:run2){
+  seed_num_data = i
+  seed_num_test_data = 1000 + i
+  result = ordinalbayes_testing(i)
+  # print(i)
+  # print(result$classification_table)
+  ACC_test[i-run1+1] = result$ACC_test
+}
+mean(ACC_test)
+```
+
 

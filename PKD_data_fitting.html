@@ -772,119 +772,28 @@ print(table(Actual = train_set_3_interact_standardized[, (p+1)], Predicted = Y_h
 <div id="ordinalbayes-ordinal-logit-model-indicator-based-bayesian-variable-selection" class="section level3">
 <h3>ordinalbayes (ordinal logit model + indicator-based bayesian
 variable selection)</h3>
-<pre class="r"><code>library(ordinalbayes)
-
-train_data = train_set_3_interact_standardized
-train_data$Y = factor(train_data$Y, ordered=TRUE)
-p = length(train_data[1,]) - 1
-OB_model=ordinalbayes(Y ~ 1,
-                      data = train_data,
-                      x = train_data[, 1:p],
-                      center = FALSE,
-                      scale = FALSE,
-                      model = &quot;regressvi&quot;,
-                      gamma.ind = &quot;fixed&quot;,
-                      pi.fixed = 0.5,
-                      seed = 1111,
-                      burnInSteps = 8000,
-                      adaptSteps = 0,
-                      numSavedSteps = 20000
-                      )</code></pre>
-<pre><code>## Welcome to JAGS 4.3.1 on Tue Dec 17 09:53:58 2024
-## JAGS is free software and comes with ABSOLUTELY NO WARRANTY
-## Loading module: basemod: ok
-## Loading module: bugs: ok
-## . . Reading data file data.txt
-## . Compiling model graph
-##    Resolving undeclared variables
-##    Allocating nodes
-## Graph information:
-##    Observed stochastic nodes: 328
-##    Unobserved stochastic nodes: 79
-##    Total graph size: 15875
-## . Reading parameter file inits1.txt
-## . Initializing model
-## . Updating 8000
-## -------------------------------------------------| 8000
-## ************************************************** 100%
-## . . . . . Updating 60000
-## -------------------------------------------------| 60000
-## ************************************************** 100%
-## . . . . Updating 0
-## . Deleting model
-## .</code></pre>
-<pre class="r"><code>coefficients = coef(OB_model)
-beta_hat = rep(0, p)
-beta_hat[coefficients$gamma &gt; 0.5] = coefficients$beta[coefficients$gamma &gt; 0.5]
-tau_hat = coefficients$alpha
-names(coefficients$gamma[coefficients$gamma &gt; 0.5])</code></pre>
-<pre><code>##  [1] &quot;Age&quot;       &quot;S-R&quot;       &quot;S-L&quot;       &quot;AP-R&quot;      &quot;AP-L&quot;      &quot;CA&quot;       
-##  [7] &quot;Sex_PP-R&quot;  &quot;Age_S-R&quot;   &quot;Age_AP-R&quot;  &quot;Age_AP-L&quot;  &quot;Age_P/C-R&quot; &quot;Age_CA&quot;</code></pre>
-<pre class="r"><code>n_train = length(train_set_3_interact_standardized[, 1])
-Y_star_hat = as.matrix(train_set_3_interact_standardized[, 1:p], nrow=n_train, byrow=TRUE) %*% beta_hat
-Y_star_hat = as.vector(Y_star_hat[,1])
-Y_hat = rep(0, n_train)
-for (l in 1:n_train){
-  if (Y_star_hat[l] &gt; tau_hat[K-1]){
-    Y_hat[l] = K
-  }
-  else{
-    Y_hat[l] = min(which(Y_star_hat[l] &lt; tau_hat))
-  }
-}
-ACC_train = mean(Y_hat == train_set_3_interact[, (p+1)])
-
-table(Actual = train_set_3_interact_standardized[, (p+1)], Predicted = Y_hat)</code></pre>
-<pre><code>##       Predicted
-## Actual   1   2   3
-##      1  75  33   3
-##      2  17  48  14
-##      3   1  20 117</code></pre>
-<pre class="r"><code>print(ACC_train)</code></pre>
-<pre><code>## [1] 0.7317073</code></pre>
-<pre class="r"><code>n_test = length(test_set_3_interact_standardized[, 1])
-Y_star_hat = as.matrix(test_set_3_interact_standardized[, 1:p], nrow=n_test, byrow=TRUE) %*% beta_hat
-Y_star_hat = as.vector(Y_star_hat[,1])
-Y_hat = rep(0, n_test)
-for (l in 1:n_test){
-  if (Y_star_hat[l] &gt; tau_hat[K-1]){
-    Y_hat[l] = K
-  }
-  else{
-    Y_hat[l] = min(which(Y_star_hat[l] &lt; tau_hat))
-  }
-}
-ACC_test = mean(Y_hat == test_set_3_interact_standardized[, (p+1)])
-
-table(Actual = test_set_3_interact_standardized[, (p+1)], Predicted = Y_hat)</code></pre>
-<pre><code>##       Predicted
-## Actual  1  2  3
-##      1 26  8  0
-##      2  9 20  1
-##      3  0  4 32</code></pre>
-<pre class="r"><code>print(ACC_test)</code></pre>
-<pre><code>## [1] 0.78</code></pre>
 </div>
 <div id="grouped-bayesian-fitting" class="section level3">
 <h3>grouped bayesian fitting</h3>
-<pre class="r"><code># 1. 計算相關係數矩陣
-full_cor_matrix = cor(train_set_3_interact_standardized[, 1:p])
+<pre class="r"><code># 1. 計算主要變數的相關係數矩陣
+main_vars = train_set_3_interact_standardized[, 3:14]  # 提取12個主要變數
+main_cor_matrix = cor(main_vars)
 
 # 2. 初始化變數
-remaining = seq_len(p)  # 未分組的列索引
-group_list = list()  # 保存群組結果
+remaining = seq_len(ncol(main_vars))  # 未分組的主要變數索引
+group_list = list()  # 保存主要變數的分組結果
 threshold = 0.93
 
-# 3. 開始分組
+# 3. 開始分組主要變數
 while (length(remaining) &gt; 0) {
   best_group = NULL
   best_group_size = 0
   for (seed in remaining) {
-    # 找出與種子列相關係數 &gt; 0.9 的所有列
-    candidate_group = remaining[full_cor_matrix[seed, remaining] &gt; threshold]
+    # 找出與種子列相關係數 &gt; threshold 的所有列
+    candidate_group = remaining[main_cor_matrix[seed, remaining] &gt; threshold]
     
     # 檢查候選群組是否為完全子圖
-    if (all(full_cor_matrix[candidate_group, candidate_group] &gt; threshold)) {
+    if (all(main_cor_matrix[candidate_group, candidate_group] &gt; threshold)) {
       # 優先選擇包含列數最多的群組
       if (length(candidate_group) &gt; best_group_size) {
         best_group = candidate_group
@@ -895,14 +804,48 @@ while (length(remaining) &gt; 0) {
   
   # 如果群組數量大於 1，則加入結果
   if (best_group_size &gt; 1) {
-    group_list[[length(group_list) + 1]] = best_group
+    group_list[[length(group_list) + 1]] = best_group + 2
   }
   
   # 從剩餘列中移除已分組的列
   remaining = setdiff(remaining, best_group)
-}</code></pre>
+}
+
+# 4. 對交互作用變數進行分組
+interaction_groups = list()
+for (i in seq_along(group_list)) {
+  main_group = group_list[[i]]
+  sex_interactions = main_group + 12  # `Sex_*` 的索引偏移量
+  age_interactions = main_group + 24  # `Age_*` 的索引偏移量
+  
+  # 將交互作用變數分組
+  interaction_groups[[length(interaction_groups) + 1]] = sex_interactions
+  interaction_groups[[length(interaction_groups) + 1]] = age_interactions
+}
+
+# 5. 整合所有群組
+final_groups = c(group_list, interaction_groups)
+names(final_groups) = NULL  # 如果不需要名稱
+final_groups</code></pre>
+<pre><code>## [[1]]
+## [1] 3 4 5 6
+## 
+## [[2]]
+## [1]  9 10
+## 
+## [[3]]
+## [1] 15 16 17 18
+## 
+## [[4]]
+## [1] 27 28 29 30
+## 
+## [[5]]
+## [1] 21 22
+## 
+## [[6]]
+## [1] 33 34</code></pre>
 <pre class="r"><code>bayes_3_interact_grouped = function(seed_num){
-  bayes_model = bayes_ordinal_fitting(train_set_3_interact_standardized, iter=iter, a=1, b=b, theta=0.5, seed_num=seed_num, save=paste0(&quot;./PKD_data/bayes_fitting/3_interact/a_1/b_&quot;, b, &quot;/grouped_&quot;, seed_num, &quot;.rds&quot;), group_list=group_list)
+  bayes_model = bayes_ordinal_fitting(train_set_3_interact_standardized, iter=iter, a=1, b=b, theta=0.5, seed_num=seed_num, save=paste0(&quot;./PKD_data/bayes_fitting/3_interact/a_1/b_&quot;, b, &quot;/grouped_&quot;, seed_num, &quot;.rds&quot;), group_list=final_groups)
   return(bayes_model)
 }</code></pre>
 <pre class="r"><code>iter = 30000
@@ -910,12 +853,12 @@ run1 = 1
 run2 = 5
 b = best_b
 
-import_vector_3_interact_grouped = c(&quot;b&quot;, &quot;iter&quot;, &quot;train_set_3_interact_standardized&quot;, &quot;bayes_ordinal_fitting&quot;, &quot;group_list&quot;)
+import_vector_3_interact_grouped = c(&quot;b&quot;, &quot;iter&quot;, &quot;train_set_3_interact_standardized&quot;, &quot;bayes_ordinal_fitting&quot;, &quot;final_groups&quot;)
 cl = makeCluster(5)
 clusterExport(cl, varlist = import_vector_3_interact_grouped)
 result_3_interact_grouped = parLapply(cl, run1:run2, bayes_3_interact_grouped) 
 stopCluster(cl)</code></pre>
-<pre class="r"><code>num_converge_sample = 20000
+<pre class="r"><code>num_converge_sample = 9000
 last_iter = burn_in_3_interact + num_converge_sample</code></pre>
 <pre class="r"><code>num_MCMC = length(result_3_interact_grouped)
 ACC_train_vector = rep(0, num_MCMC)
@@ -926,16 +869,16 @@ for (i in 1:num_MCMC){
   print(temp$ACC_train)
   print(X_interact_col[temp$gamma_hat == 1])
 }</code></pre>
-<pre><code>## [1] 0.7073171
+<pre><code>## [1] 0.7317073
 ## [1] &quot;Age&quot;  &quot;S-R&quot;  &quot;S-L&quot;  &quot;AP-R&quot; &quot;AP-L&quot;
-## [1] 0.7286585
-## [1] &quot;Age&quot;  &quot;S-R&quot;  &quot;S-L&quot;  &quot;AP-R&quot; &quot;AP-L&quot;
+## [1] 0.7073171
+## [1] &quot;Age&quot;  &quot;S-R&quot;  &quot;S-L&quot;  &quot;AP-R&quot; &quot;AP-L&quot; &quot;CA&quot;  
+## [1] 0.7073171
+## [1] &quot;Age&quot;  &quot;S-R&quot;  &quot;S-L&quot;  &quot;AP-R&quot; &quot;AP-L&quot; &quot;CA&quot;  
 ## [1] 0.7256098
 ## [1] &quot;Age&quot;  &quot;S-R&quot;  &quot;S-L&quot;  &quot;AP-R&quot; &quot;AP-L&quot;
-## [1] 0.7164634
-## [1] &quot;Age&quot;  &quot;S-R&quot;  &quot;S-L&quot;  &quot;AP-R&quot; &quot;AP-L&quot;
-## [1] 0.722561
-## [1] &quot;Age&quot;  &quot;S-R&quot;  &quot;S-L&quot;  &quot;AP-R&quot; &quot;AP-L&quot;</code></pre>
+## [1] 0.7347561
+## [1] &quot;Age&quot;  &quot;S-R&quot;  &quot;S-L&quot;  &quot;AP-R&quot; &quot;AP-L&quot; &quot;CA&quot;</code></pre>
 <pre class="r"><code>best_bayes_model_grouped = result_3_interact_grouped[[which.max(ACC_train_vector)]]</code></pre>
 <pre class="r"><code>p = length(best_bayes_model_grouped$gamma_record[, 1])
 K = length(best_bayes_model_grouped$tau_record[, 1]) + 1
@@ -944,20 +887,23 @@ Y_hat = best_train_result_grouped$Y_hat
 gamma_sum = best_train_result_grouped$gamma_sum
 
 print(gamma_sum)</code></pre>
-<pre><code>##  [1]    31 16658 20000 20000 20000 20000   875  2047    66    66   753   819
-## [13]   171  2231     2     2     2     2  4172  2808     2     2    31    31
-## [25]   498  2293     2     2     2     2   599  1590   854  2964  1569  2135
-## [37]   171  2231</code></pre>
+<pre><code>##  [1] 1544 7506 9000 9000 9000 9000  426  409   65   65  618  490  267 4547    7
+## [16]    7    7    7 1763 1143  143  143  932 1068  233  537    2    2    2    2
+## [31]  416  400   14   14 1505  708  215 2908</code></pre>
 <pre class="r"><code>print(X_interact_col[best_train_result_grouped$gamma_hat == 1])</code></pre>
-<pre><code>## [1] &quot;Age&quot;  &quot;S-R&quot;  &quot;S-L&quot;  &quot;AP-R&quot; &quot;AP-L&quot;</code></pre>
+<pre><code>## [1] &quot;Age&quot;  &quot;S-R&quot;  &quot;S-L&quot;  &quot;AP-R&quot; &quot;AP-L&quot; &quot;CA&quot;</code></pre>
+<pre class="r"><code>print(best_train_result_grouped$beta_hat[best_train_result_grouped$gamma_hat == 1])</code></pre>
+<pre><code>## [1] -0.48378937  0.27190480 -0.03229565 -1.52731804 -0.59307688  0.36736809</code></pre>
+<pre class="r"><code>print(best_train_result_grouped$tau_hat)</code></pre>
+<pre><code>## [1] -0.7747319  0.4980361</code></pre>
 <pre class="r"><code>print(table(Actual = train_set_3_interact_standardized[, (p+1)], Predicted = Y_hat))</code></pre>
 <pre><code>##       Predicted
 ## Actual   1   2   3
-##      1  76  30   5
-##      2  22  43  14
-##      3   2  16 120</code></pre>
+##      1  79  28   4
+##      2  23  43  13
+##      3   2  17 119</code></pre>
 <pre class="r"><code>print(max(ACC_train_vector))</code></pre>
-<pre><code>## [1] 0.7286585</code></pre>
+<pre><code>## [1] 0.7347561</code></pre>
 <pre class="r"><code>n_test = length(test_set_3_interact_standardized[, 1])
 Y_star_hat = as.matrix(test_set_3_interact_standardized[, 1:p], nrow=n_test, byrow=TRUE) %*% best_train_result_grouped$beta_hat
 Y_star_hat = as.vector(Y_star_hat[,1])
@@ -976,13 +922,13 @@ table(Actual = test_set_3_interact_standardized[, (p+1)], Predicted = Y_hat)</co
 <pre><code>##       Predicted
 ## Actual  1  2  3
 ##      1 27  7  0
-##      2 14 15  1
-##      3  0  4 32</code></pre>
+##      2 12 17  1
+##      3  0  5 31</code></pre>
 <pre class="r"><code>print(ACC_test)</code></pre>
-<pre><code>## [1] 0.74</code></pre>
+<pre><code>## [1] 0.75</code></pre>
 </div>
-<div id="refitting-with-age-s-r-s-l-ap-r-ap-l-by-ordinal-probit-model" class="section level3">
-<h3>Refitting with Age, S-R, S-L, AP-R, AP-L by ordinal probit
+<div id="refitting-with-age-s-r-s-l-ap-r-ap-l-ca-by-ordinal-probit-model" class="section level3">
+<h3>Refitting with Age, S-R, S-L, AP-R, AP-L, CA by ordinal probit
 model</h3>
 <pre class="r"><code>selected_train_features = train_set_3_interact_standardized[, best_train_result_grouped$gamma_hat == 1]
 train_data = cbind(Y = as.factor(train_set_3_interact_standardized$Y), selected_train_features)
@@ -999,19 +945,41 @@ ACC_test = mean(Y_hat_test == test_set_3_interact_standardized[, (p+1)])
 print(table(Actual = train_set_3_interact_standardized[, (p+1)], Predicted = Y_hat_train))</code></pre>
 <pre><code>##       Predicted
 ## Actual   1   2   3
-##      1  82  21   8
-##      2  26  34  19
-##      3   2  11 125</code></pre>
+##      1  84  18   9
+##      2  27  33  19
+##      3   3  10 125</code></pre>
 <pre class="r"><code>print(ACC_train)</code></pre>
-<pre><code>## [1] 0.7347561</code></pre>
+<pre><code>## [1] 0.7378049</code></pre>
 <pre class="r"><code>print(table(Actual = test_set_3_interact_standardized[, (p+1)], Predicted = Y_hat_test))</code></pre>
 <pre><code>##       Predicted
 ## Actual  1  2  3
-##      1 29  5  0
-##      2 16 11  3
+##      1 28  6  0
+##      2 16 12  2
 ##      3  0  3 33</code></pre>
 <pre class="r"><code>print(ACC_test)</code></pre>
 <pre><code>## [1] 0.73</code></pre>
+<pre class="r"><code>summary(mle_model)</code></pre>
+<pre><code>## formula: Y ~ Age + `S-R` + `S-L` + `AP-R` + `AP-L` + CA
+## data:    train_data
+## 
+##  link   threshold nobs logLik  AIC    niter max.grad cond.H 
+##  probit flexible  328  -207.77 431.55 5(0)  6.34e-08 3.5e+02
+## 
+## Coefficients:
+##        Estimate Std. Error z value Pr(&gt;|z|)    
+## Age    -0.45898    0.08813  -5.208 1.91e-07 ***
+## `S-R`   0.30233    0.58129   0.520  0.60300    
+## `S-L`  -0.06506    0.62816  -0.104  0.91751    
+## `AP-R` -1.54505    0.49691  -3.109  0.00188 ** 
+## `AP-L` -0.52887    0.53362  -0.991  0.32164    
+## CA      0.24007    0.08361   2.871  0.00409 ** 
+## ---
+## Signif. codes:  0 &#39;***&#39; 0.001 &#39;**&#39; 0.01 &#39;*&#39; 0.05 &#39;.&#39; 0.1 &#39; &#39; 1
+## 
+## Threshold coefficients:
+##     Estimate Std. Error z value
+## 1|2 -0.80181    0.10033  -7.992
+## 2|3  0.45421    0.09849   4.612</code></pre>
 </div>
 
 
